@@ -158,3 +158,101 @@ export function analyzePackageJson(pkg) {
 
   return issues;
 }
+
+export function extractCodeFilesFromTgz(arrayBuffer) {
+  const extractedFiles = [];
+  try {
+    const compressed = new Uint8Array(arrayBuffer);
+    const tarBuffer = gunzipSync(compressed);
+    
+    let offset = 0;
+    while (offset < tarBuffer.length) {
+      if (tarBuffer[offset] === 0 && tarBuffer[offset + 1] === 0) break;
+
+      const filenameChars = [];
+      for (let i = 0; i < 100; i++) {
+        if (tarBuffer[offset + i] === 0) break;
+        filenameChars.push(String.fromCharCode(tarBuffer[offset + i]));
+      }
+      const filename = filenameChars.join('');
+
+      const sizeStrChars = [];
+      for (let i = 0; i < 12; i++) {
+        if (tarBuffer[offset + 124 + i] === 0 || tarBuffer[offset + 124 + i] === 32) break;
+        sizeStrChars.push(String.fromCharCode(tarBuffer[offset + 124 + i]));
+      }
+      const sizeStr = sizeStrChars.join('').trim();
+      const fileSize = parseInt(sizeStr, 8);
+
+      const isCodeFile = filename.endsWith('.js') || filename.endsWith('.ts') || filename.endsWith('.jsx') || filename.endsWith('.tsx') || filename.endsWith('.cjs') || filename.endsWith('.mjs');
+      
+      const isDirectory = filename.endsWith('/') || tarBuffer[offset + 156] === 53;
+
+      if (!isDirectory && isCodeFile) {
+        const contentStart = offset + 512;
+        const fileBytes = tarBuffer.slice(contentStart, contentStart + fileSize);
+        let contentStr = '';
+        try {
+          contentStr = new TextDecoder('utf-8').decode(fileBytes);
+          extractedFiles.push({ name: filename, content: contentStr });
+        } catch (e) {
+            // ignore
+        }
+      }
+
+      if (isNaN(fileSize)) break;
+      offset += 512 + Math.ceil(fileSize / 512) * 512;
+    }
+  } catch (error) {
+    console.error("Extraction code error:", error);
+  }
+  return extractedFiles;
+}
+
+export function analyzeCodeForL4(files) {
+  const issues = [];
+  const secretPatterns = [
+    { regex: /(AKIA[0-9A-Z]{16})/g, desc: 'AWS Access Key' },
+    { regex: /-----BEGIN PRIVATE KEY-----/g, desc: 'Private Key' },
+    { regex: /(?:apikey|api_key|api-key)\s*[:=]\s*['"][a-zA-Z0-9_\-]{10,}['"]/gi, desc: 'Hardcoded API Key' },
+    { regex: /(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]{5,}['"]/gi, desc: 'Hardcoded Password' },
+    { regex: /sk_live_[0-9a-zA-Z]{24}/g, desc: 'Stripe Secret Key' },
+  ];
+
+  for (const file of files) {
+    for (const pattern of secretPatterns) {
+      if (pattern.regex.test(file.content)) {
+         issues.push({
+           level: 'high',
+           type: 'exposed-secret',
+           message: `Exposed ${pattern.desc} found in ${file.name}`
+         });
+      }
+    }
+  }
+  return issues;
+}
+
+export function analyzeCodeForL5(files) {
+  const issues = [];
+  const dangerousPatterns = [
+    { regex: /eval\s*\(/g, desc: 'eval() function usage' },
+    { regex: /require\s*\(\s*['"]child_process['"]\s*\)/g, desc: 'child_process import' },
+    { regex: /exec\s*\(/g, desc: 'exec() shell command' },
+    { regex: /spawn\s*\(/g, desc: 'spawn() shell command' },
+    { regex: /String\.fromCharCode/g, desc: 'String.fromCharCode (often used for obfuscation)' }
+  ];
+
+  for (const file of files) {
+    for (const pattern of dangerousPatterns) {
+      if (pattern.regex.test(file.content)) {
+         issues.push({
+           level: 'critical',
+           type: 'dangerous-code',
+           message: `Dangerous pattern "${pattern.desc}" detected in ${file.name}`
+         });
+      }
+    }
+  }
+  return issues;
+}

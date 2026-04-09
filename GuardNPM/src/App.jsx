@@ -1,20 +1,21 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from "react-router-dom";
 import Login from "./Components/Login";
 import Register from "./Components/Register";
-import { ShieldCheck, ArrowRight, UploadCloud, FileArchive, LogOut, AlertTriangle, CheckCircle, Info, Loader2, Folder, File, FileText } from "lucide-react";
+import Dashboard from "./Components/Dashboard";
+import { ShieldCheck, ArrowRight, UploadCloud, FileArchive, LogOut, AlertTriangle, CheckCircle, Info, Loader2, Folder, File, FileText, Activity } from "lucide-react";
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { collection, addDoc, updateDoc, doc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import maliciousPackageData from "./data/malicious_npm_packages.json";
-import { extractPackageJsonFromTgz, analyzePackageJson, extractFileListFromTgz } from "./utils/analyzer";
+import { extractPackageJsonFromTgz, analyzePackageJson, extractFileListFromTgz, extractCodeFilesFromTgz, analyzeCodeForL4, analyzeCodeForL5 } from "./utils/analyzer";
 
 function Home() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [file, setFile] = useState(null);
   const [analysisResults, setAnalysisResults] = useState([]);
-  const [analysisPhase, setAnalysisPhase] = useState('IDLE'); // 'IDLE' | 'L1_LOADING' | 'L1_DONE' | 'L2_LOADING' | 'L2_DONE' | 'L3_LOADING' | 'L3_DONE'
+  const [analysisPhase, setAnalysisPhase] = useState('IDLE'); // 'IDLE' | 'L1_LOADING' | 'L1_DONE' | 'L2_LOADING' | 'L2_DONE' | 'L3_LOADING' | 'L3_DONE' | 'L4_LOADING' | 'L4_DONE' | 'L5_LOADING' | 'L5_DONE'
   const [scanDocId, setScanDocId] = useState(null);
   const [fileList, setFileList] = useState([]);
 
@@ -314,6 +315,124 @@ function Home() {
     }
   };
 
+  const handleLevel4 = async () => {
+    setAnalysisPhase('L4_LOADING');
+    setAnalysisResults(prev => [
+      ...prev,
+      {
+        id: 'l4-loading',
+        type: 'loading',
+        title: 'Executing Level 4 Scan...',
+        message: 'Performing deep code analysis for exposed secrets, API keys, and credentials.'
+      }
+    ]);
+
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const codeFiles = extractCodeFilesFromTgz(arrayBuffer);
+      const issues = analyzeCodeForL4(codeFiles);
+      
+      const hasCritical = issues.some(i => i.level === 'critical' || i.level === 'high');
+
+      const l4Result = issues.length > 0 
+        ? {
+            id: 'l4-result',
+            type: hasCritical ? 'danger' : 'warning',
+            title: `L4 Alert: Exposed Secrets Detected`,
+            message: `Deep code scanning found potentially exposed credentials or secrets.`,
+            issues: issues
+          }
+        : { 
+            id: 'l4-result',
+            type: 'success', 
+            title: 'L4 Analysis Passed (Credential Scan)',
+            message: `No exposed API keys, passwords, or secrets detected in source files.` 
+          };
+      
+      setAnalysisResults(prev => [...prev.filter(r => r.id !== 'l4-loading'), l4Result]);
+      setAnalysisPhase('L4_DONE');
+      
+      if (scanDocId) {
+        updateDoc(doc(db, "package_scans", scanDocId), {
+          status: hasCritical ? "WARNING_L4" : "SAFE_PASSED_L4",
+          l4Issues: issues
+        }).catch(e => console.error(e));
+      }
+    } catch (err) {
+      setAnalysisResults(prev => [
+        ...prev.filter(r => r.id !== 'l4-loading'),
+        {
+          id: 'error-l4',
+          type: 'danger',
+          title: 'L4 Critical Failure',
+          message: `An error occurred during L4 analysis: ${err.message}`
+        }
+      ]);
+      setAnalysisPhase('L4_DONE');
+    }
+  };
+
+  const handleLevel5 = async () => {
+    setAnalysisPhase('L5_LOADING');
+    setAnalysisResults(prev => [
+      ...prev,
+      {
+        id: 'l5-loading',
+        type: 'loading',
+        title: 'Executing Level 5 Scan...',
+        message: 'Performing structural code analysis for dangerous commands, shell execution, and obfuscation.'
+      }
+    ]);
+
+    await new Promise(resolve => setTimeout(resolve, 11500));
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const codeFiles = extractCodeFilesFromTgz(arrayBuffer);
+      const issues = analyzeCodeForL5(codeFiles);
+      
+      const hasCritical = issues.some(i => i.level === 'critical' || i.level === 'high');
+
+      const l5Result = issues.length > 0 
+        ? {
+            id: 'l5-result',
+            type: hasCritical ? 'danger' : 'warning',
+            title: `L5 Alert: Dangerous Code Patterns`,
+            message: `Deep code scanning found risky operations like eval(), child process execution, or obfuscation strings.`,
+            issues: issues
+          }
+        : { 
+            id: 'l5-result',
+            type: 'success', 
+            title: 'L5 Analysis Passed (Behavioral Scan)',
+            message: `No suspicious behavioral patterns or obfuscated payloads detected in source files.` 
+          };
+      
+      setAnalysisResults(prev => [...prev.filter(r => r.id !== 'l5-loading'), l5Result]);
+      setAnalysisPhase('L5_DONE');
+      
+      if (scanDocId) {
+        updateDoc(doc(db, "package_scans", scanDocId), {
+          status: hasCritical ? "BLOCKED_L5" : "SAFE_PASSED_ALL",
+          l5Issues: issues
+        }).catch(e => console.error(e));
+      }
+    } catch (err) {
+      setAnalysisResults(prev => [
+        ...prev.filter(r => r.id !== 'l5-loading'),
+        {
+          id: 'error-l5',
+          type: 'danger',
+          title: 'L5 Critical Failure',
+          message: `An error occurred during L5 analysis: ${err.message}`
+        }
+      ]);
+      setAnalysisPhase('L5_DONE');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950">
@@ -337,6 +456,13 @@ function Home() {
             <div className="text-sm font-medium text-slate-400 hidden sm:block">
               {user.email}
             </div>
+            <Link 
+              to="/dashboard"
+              className="px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-sm font-medium rounded-xl flex items-center gap-2 transition-all text-indigo-400 hover:text-indigo-300"
+            >
+              <Activity className="w-4 h-4" />
+              Dashboard
+            </Link>
             <button 
               onClick={handleLogout}
               className="px-4 py-2 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 text-sm font-medium rounded-xl flex items-center gap-2 transition-all text-red-400 hover:text-red-300"
@@ -365,7 +491,7 @@ function Home() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start w-full">
             {/* LEFT: File Structure Details */}
             <div className="lg:col-span-3 order-2 lg:order-1 h-[60vh] xl:h-[70vh]">
-              {(analysisPhase === 'L1_DONE' || analysisPhase === 'L2_LOADING' || analysisPhase === 'L2_DONE' || analysisPhase === 'L3_LOADING' || analysisPhase === 'L3_DONE') && fileList.length > 0 && (
+              {(analysisPhase !== 'IDLE' && analysisPhase !== 'L1_LOADING') && fileList.length > 0 && (
                 <div className="h-full flex flex-col backdrop-blur-xl bg-slate-900/40 border border-slate-700/50 rounded-3xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-4 duration-500">
                   <div className="p-4 border-b border-slate-700/50 bg-slate-800/30">
                     <h3 className="text-lg font-bold text-slate-200 flex items-center gap-2">
@@ -455,6 +581,30 @@ function Home() {
                       className="w-full py-4 px-6 bg-slate-800/80 hover:bg-slate-700/90 border-2 border-slate-600 hover:border-indigo-500 text-indigo-400 hover:text-indigo-300 font-bold rounded-xl flex items-center justify-center gap-3 group transition-all shadow-lg hover:shadow-indigo-500/20"
                     >
                       Proceed to Level 3 Analysis
+                      <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+                )}
+
+                {analysisPhase === 'L3_DONE' && file && (
+                  <div className="flex justify-center mt-6 animate-in fade-in zoom-in duration-500 relative z-20">
+                    <button 
+                      onClick={handleLevel4}
+                      className="w-full py-4 px-6 bg-slate-800/80 hover:bg-slate-700/90 border-2 border-slate-600 hover:border-indigo-500 text-indigo-400 hover:text-indigo-300 font-bold rounded-xl flex items-center justify-center gap-3 group transition-all shadow-lg hover:shadow-indigo-500/20"
+                    >
+                      Proceed to Level 4 Analysis
+                      <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+                )}
+
+                {analysisPhase === 'L4_DONE' && file && (
+                  <div className="flex justify-center mt-6 animate-in fade-in zoom-in duration-500 relative z-20">
+                    <button 
+                      onClick={handleLevel5}
+                      className="w-full py-4 px-6 bg-slate-800/80 hover:bg-slate-700/90 border-2 border-slate-600 hover:border-indigo-500 text-indigo-400 hover:text-indigo-300 font-bold rounded-xl flex items-center justify-center gap-3 group transition-all shadow-lg hover:shadow-indigo-500/20"
+                    >
+                      Proceed to Level 5 Analysis
                       <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                     </button>
                   </div>
@@ -586,6 +736,7 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Router>
