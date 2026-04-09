@@ -14,7 +14,7 @@ function Home() {
   const [loading, setLoading] = useState(true);
   const [file, setFile] = useState(null);
   const [analysisResults, setAnalysisResults] = useState([]);
-  const [analysisPhase, setAnalysisPhase] = useState('IDLE'); // 'IDLE' | 'L1_LOADING' | 'L1_DONE' | 'L2_LOADING' | 'L2_DONE'
+  const [analysisPhase, setAnalysisPhase] = useState('IDLE'); // 'IDLE' | 'L1_LOADING' | 'L1_DONE' | 'L2_LOADING' | 'L2_DONE' | 'L3_LOADING' | 'L3_DONE'
   const [scanDocId, setScanDocId] = useState(null);
   const [fileList, setFileList] = useState([]);
 
@@ -220,6 +220,100 @@ function Home() {
     setAnalysisPhase('L2_DONE');
   };
 
+  const handleLevel3 = async () => {
+    setAnalysisPhase('L3_LOADING');
+    setAnalysisResults(prev => [
+      ...prev,
+      {
+        id: 'l3-loading',
+        type: 'loading',
+        title: 'Executing Level 3 Scan...',
+        message: 'Checking for executable files (.exe, .sh) and suspicious install scripts in package.json.'
+      }
+    ]);
+
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    try {
+      // 1. Check for .exe or .sh files
+      const hasExecutables = fileList.some(f => f.name.toLowerCase().endsWith('.exe') || f.name.toLowerCase().endsWith('.sh'));
+      let l3Results = [];
+
+      if (hasExecutables) {
+        l3Results.push({
+          id: 'l3-warning',
+          type: 'warning',
+          title: 'L3 Warning: Executable Files Found',
+          message: 'The package contains .exe or .sh files. Proceeding with caution to check package.json.'
+        });
+      }
+
+      // 2. Check package.json for scripts
+      const arrayBuffer = await file.arrayBuffer();
+      const pkg = extractPackageJsonFromTgz(arrayBuffer);
+      let blockedScripts = [];
+      
+      if (pkg && pkg.scripts) {
+        const sc = pkg.scripts;
+        if (sc.preinstall) blockedScripts.push('preinstall');
+        if (sc.postinstall) blockedScripts.push('postinstall');
+        if (sc.install) blockedScripts.push('install');
+      }
+
+      if (blockedScripts.length > 0) {
+        l3Results.push({
+          id: 'l3-blocked',
+          type: 'danger',
+          title: 'L3 Alert: Malicious Install Scripts Detected',
+          message: `Found suspicious installation scripts (${blockedScripts.join(', ')}). Scanning stopped.`
+        });
+        
+        setAnalysisResults(prev => [...prev.filter(r => r.id !== 'l3-loading'), ...l3Results]);
+        setAnalysisPhase('L3_DONE');
+        
+        if (scanDocId) {
+          updateDoc(doc(db, "package_scans", scanDocId), {
+            status: "BLOCKED_L3",
+            blockedAtLevel: 3,
+            hasExecutables: hasExecutables,
+            blockedScripts: blockedScripts
+          }).catch(e => console.error(e));
+        }
+        return; // Stop scanning further if any found
+      }
+
+      // If no blocked scripts found
+      l3Results.push({
+         id: 'l3-success',
+         type: 'success',
+         title: 'L3 Analysis Passed',
+         message: 'No dangerous install scripts detected in package.json.'
+      });
+
+      setAnalysisResults(prev => [...prev.filter(r => r.id !== 'l3-loading'), ...l3Results]);
+      setAnalysisPhase('L3_DONE');
+
+      if (scanDocId) {
+        updateDoc(doc(db, "package_scans", scanDocId), {
+          status: "SAFE_PASSED_ALL_L3",
+          hasExecutables: hasExecutables
+        }).catch(e => console.error(e));
+      }
+
+    } catch (err) {
+       setAnalysisResults(prev => [
+         ...prev.filter(r => r.id !== 'l3-loading'),
+         {
+           id: 'error-l3',
+           type: 'danger',
+           title: 'L3 Critical Failure',
+           message: `An error occurred during L3 analysis: ${err.message}`
+         }
+       ]);
+       setAnalysisPhase('L3_DONE');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950">
@@ -271,7 +365,7 @@ function Home() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start w-full">
             {/* LEFT: File Structure Details */}
             <div className="lg:col-span-3 order-2 lg:order-1 h-[60vh] xl:h-[70vh]">
-              {(analysisPhase === 'L1_DONE' || analysisPhase === 'L2_LOADING' || analysisPhase === 'L2_DONE') && fileList.length > 0 && (
+              {(analysisPhase === 'L1_DONE' || analysisPhase === 'L2_LOADING' || analysisPhase === 'L2_DONE' || analysisPhase === 'L3_LOADING' || analysisPhase === 'L3_DONE') && fileList.length > 0 && (
                 <div className="h-full flex flex-col backdrop-blur-xl bg-slate-900/40 border border-slate-700/50 rounded-3xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-4 duration-500">
                   <div className="p-4 border-b border-slate-700/50 bg-slate-800/30">
                     <h3 className="text-lg font-bold text-slate-200 flex items-center gap-2">
@@ -342,13 +436,25 @@ function Home() {
                   </button>
                 </form>
 
-                {analysisPhase === 'L1_DONE' && (
+                {analysisPhase === 'L1_DONE' && file && (
                   <div className="flex justify-center mt-6 animate-in fade-in zoom-in duration-500 relative z-20">
                     <button 
                       onClick={handleLevel2}
                       className="w-full py-4 px-6 bg-slate-800/80 hover:bg-slate-700/90 border-2 border-slate-600 hover:border-indigo-500 text-indigo-400 hover:text-indigo-300 font-bold rounded-xl flex items-center justify-center gap-3 group transition-all shadow-lg hover:shadow-indigo-500/20"
                     >
                       Proceed to Level 2 Analysis
+                      <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+                )}
+
+                {analysisPhase === 'L2_DONE' && file && (
+                  <div className="flex justify-center mt-6 animate-in fade-in zoom-in duration-500 relative z-20">
+                    <button 
+                      onClick={handleLevel3}
+                      className="w-full py-4 px-6 bg-slate-800/80 hover:bg-slate-700/90 border-2 border-slate-600 hover:border-indigo-500 text-indigo-400 hover:text-indigo-300 font-bold rounded-xl flex items-center justify-center gap-3 group transition-all shadow-lg hover:shadow-indigo-500/20"
+                    >
+                      Proceed to Level 3 Analysis
                       <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                     </button>
                   </div>
